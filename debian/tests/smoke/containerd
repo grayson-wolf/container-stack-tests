@@ -1,0 +1,67 @@
+#!/bin/bash
+. "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/image_fetching.sh"
+set_strict
+set_x
+
+# propagate any proxy environment into the containerd unit (no-op if unset)
+write_proxy_dropin containerd.service
+
+# (re)start containerd with the drop-in in effect
+systemctl restart containerd
+
+# Pull latest stable release Ubuntu from cdimage and build a minimal OCI image
+# layout by hand (avoids needing docker/skopeo just to import into containerd).
+release="${tier_1_images[1]}"
+arch="${AUTOPKGTEST_TEST_ARCH:-$(dpkg --print-architecture)}"
+(cd "$tempDir" && fetch_tier_1_tar "$release" "$arch")
+
+# --- build the OCI layout under $oci, then tar it (ctr import reads a .tar) ---
+oci="$tempDir/oci"
+layer="$oci/blobs/sha256"
+mkdir -p "$layer"
+
+# The layer is the (gzipped) rootfs as-is. diff_id is the digest of the
+# UNCOMPRESSED form (containerd decompresses and checks it, else "wrong diff id").
+cp "$tempDir/image.tar.gz" "$layer/rootfs.tar.gz"
+layer_dig="sha256:$(sha256sum "$layer/rootfs.tar.gz" | cut -d' ' -f1)"
+layer_size=$(stat -c %s "$layer/rootfs.tar.gz")
+diff_id="sha256:$(zcat "$layer/rootfs.tar.gz" | sha256sum | cut -d' ' -f1)"
+mv "$layer/rootfs.tar.gz" "$layer/${layer_dig#sha256:}"
+
+# Minimal config; rootfs.diff_ids must list the uncompressed digest.
+cfg="$(mktemp)"
+cat > "$cfg" <<EOF
+{"architecture":"amd64","os":"linux","config":{"Cmd":["/bin/sh"]},"rootfs":{"type":"layers","diff_ids":["$diff_id"]}}
+EOF
+cfg_dig="sha256:$(sha256sum "$cfg" | cut -d' ' -f1)"
+cfg_size=$(stat -c %s "$cfg")
+mv "$cfg" "$layer/${cfg_dig#sha256:}"
+
+# Manifest referencing the config + layer.
+man="$(mktemp)"
+cat > "$man" <<EOF
+{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
+ "config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"$cfg_dig","size":$cfg_size},
+ "layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"$layer_dig","size":$layer_size}]}
+EOF
+man_dig="sha256:$(sha256sum "$man" | cut -d' ' -f1)"
+man_size=$(stat -c %s "$man")
+mv "$man" "$layer/${man_dig#sha256:}"
+
+printf '{"imageLayoutVersion":"1.0.0"}\n' > "$oci/oci-layout"
+cat > "$oci/index.json" <<EOF
+{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",
+ "manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"$man_dig","size":$man_size,
+   "annotations":{"org.opencontainers.image.ref.name":"ubuntu-base:latest"}}]}
+EOF
+
+# `ctr images import` reads an OCI layout as a tar archive, not a directory.
+tar -cf "$tempDir/oci.tar" -C "$oci" .
+ctr images import "$tempDir/oci.tar"
+
+# run it and capture the output
+output="$(ctr run --rm ubuntu-base:latest "$(unique_name)" echo success)"
+
+# ensure the output was exactly what we expected
+[ "$output" = 'success' ]

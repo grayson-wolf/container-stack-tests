@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+#
+# Build pipeline test for the container stack
+# Exits 1 if any image fails its test
+#
+. "$(dirname "$0")/lib/common.sh"
+. "$(dirname "$0")/lib/image_fetching.sh"
+set_strict
+set_x
+
+readonly RC_OK=0
+readonly RC_FETCH=1      # fetch/import of the base tarball failed
+readonly RC_BUILD=2      # single-arch buildx build failed
+readonly RC_MULTIARCH=3  # multi-arch build failed
+readonly RC_CTR=4        # ctr<->docker handoff failed
+readonly RC_COMPOSE=5    # compose lifecycle failed
+readonly RC_NETWORK=6    # networking assertion failed
+readonly RC_RESTART=7    # restart survival failed
+readonly RC_MAX=$RC_RESTART
+
+result_strings=(
+  "OK"                        # 0
+  "FETCH/IMPORT FAILED"       # 1
+  "BUILD FAILED"              # 2
+  "MULTI-ARCH FAILED"         # 3
+  "CTR/DOCKER HANDOFF FAILED" # 4
+  "COMPOSE FAILED"            # 5
+  "NETWORK FAILED"            # 6
+  "RESTART FAILED"            # 7
+  "UNKNOWN ERROR"             # 8 (out-of-range overflow; > RC_MAX maps here)
+)
+
+arch="${AUTOPKGTEST_TEST_ARCH:-$(dpkg --print-architecture)}"
+
+# Check if we'recurrently rootless (this test runs in both contexts)
+rootless=false
+if docker info -f '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
+  rootless=true
+fi
+
+# single-arch builder: `default` (docker driver, in-daemon) when rootful;
+# a docker-container builder when rootless (the only driver a rootless daemon
+# supports for --load).
+if [ "$rootless" = true ]; then
+  docker buildx create --name pipeline-builder --driver docker-container --bootstrap
+  defer 'docker buildx rm -f pipeline-builder >/dev/null 2>&1 || true'
+  SINGLE_BUILDER=pipeline-builder
+else
+  SINGLE_BUILDER=default
+fi
+
+# multi arch builder, needs docker-container driver so it can have --platform and --format OCI
+docker buildx create --name pipeline-builder-multi --driver docker-container --bootstrap
+defer 'docker buildx rm -f pipeline-builder-multi >/dev/null 2>&1 || true'
+
+test_image() {
+  local release="$1"
+
+  echo "Fetching $release $arch..."
+  local workdir="$tempDir/work-$release"
+  mkdir -p "$workdir"
+  if ! (cd "$workdir" && fetch_tier_1_tar "$release" "$arch"); then
+    echo "ERROR - $release: failed to fetch base tarball" >&2
+    return $RC_FETCH
+  fi
+  local tarball="$workdir/image.tar.gz"
+
+  # Both build contexts are just FROM scratch, ADD the tarball, no registries
+  # are needed.
+  #
+  # We put the tarball in the context so both drivers can see the images
+  # (otherwise docker-container driver wouldn't)
+
+  # Single-arch build context
+  local ctx="$tempDir/ctx-$release"
+  mkdir -p "$ctx"
+  cp "$tarball" "$ctx/rootfs.tar.gz"
+  cat > "$ctx/Dockerfile" <<EOF
+FROM scratch
+ADD rootfs.tar.gz /
+RUN set -e; echo "build ok for $release"; test -x /bin/sh
+CMD ["sleep", "inf"]
+EOF
+
+  # Multi-arch build context. This one omits the sanity "run" command as
+  # otherwise we'd need qemu, and we're really only testing that the *build*
+  # works.
+  local ctxm="$tempDir/ctx-multi-$release"
+  mkdir -p "$ctxm"
+  cp "$tarball" "$ctxm/rootfs.tar.gz"
+  cat > "$ctxm/Dockerfile" <<EOF
+FROM scratch
+ADD rootfs.tar.gz /
+CMD ["sleep", "inf"]
+EOF
+
+  # Also import the base for the compose `db` service and as a sanity check
+  # that the tarball is a usable rootfs.
+  if ! docker import "$tarball" "ubuntu-base:$release" >/dev/null 2>&1; then
+    echo "ERROR - $release: failed to import base image" >&2
+    return $RC_FETCH
+  fi
+
+  # Single-arch build, --load'ed.
+  if ! docker buildx build --builder "$SINGLE_BUILDER" --pull=false --load \
+        -t "pipeline-built:$release" "$ctx"; then
+    echo "ERROR - $release: single-arch buildx build failed" >&2
+    return $RC_BUILD
+  fi
+
+  # Choose arches to build on
+  if [ $arch != "amd64" ]; then
+    local platform="linux/amd64,linux/${arch}"
+  else
+    local platform="linux/amd64,linux/arm64"
+  fi
+
+  # Multi-arch build on the docker-container builder, emitting OCI
+  if ! docker buildx build --builder pipeline-builder-multi --pull=false \
+        --platform "$platform" \
+        --output "type=oci,dest=$ctx/out-oci.tar" \
+        -t "pipeline-built-multi:$release" "$ctxm"; then
+    echo "ERROR - $release: multi-arch buildx build failed" >&2
+    return $RC_MULTIARCH
+  fi
+
+  # Import the multiarch build into containerd and make sure it can see it.
+  # Skipped on rootless since ctr talks to the system containerd socket
+  if [ "$rootless" = false ]; then
+    if ! ctr images import "$ctx/out-oci.tar" >/dev/null 2>&1; then
+      echo "ERROR - $release: ctr could not import the buildx OCI layout" >&2
+      return $RC_CTR
+    fi
+    if ! ctr images ls -q | grep -q "pipeline-built-multi"; then
+      echo "ERROR - $release: image not visible to containerd after import" >&2
+      return $RC_CTR
+    fi
+  fi
+
+  # Two-service compose project (web = our single-arch image, db = base)
+  local project="pipe-$release"
+  local projdir="$tempDir/compose-$release"
+  mkdir -p "$projdir"
+  cat > "$projdir/compose.yaml" <<EOF
+services:
+  web:
+    image: pipeline-built:$release
+    depends_on:
+      db:
+        condition: service_started
+    restart: always
+  db:
+    image: ubuntu-base:$release
+    command: ["sleep", "inf"]
+EOF
+
+  # Bring up the project
+  if ! (cd "$projdir" && docker compose -p "$project" up -d); then
+    echo "ERROR - $release: compose up failed" >&2
+    return $RC_COMPOSE
+  fi
+  defer "(cd '$projdir' && docker compose -p '$project' down -v) >/dev/null 2>&1 || true"
+
+  if ! docker compose -p "$project" ps --status running --format '{{.Service}}' \
+        | grep -qx web; then
+    echo "ERROR - $release: compose web service not running" >&2
+    return $RC_COMPOSE
+  fi
+
+  # Make sure that web can see db
+  if ! docker compose -p "$project" exec -T web getent hosts db >/dev/null 2>&1; then
+    echo "ERROR - $release: service-name DNS (web -> db) failed" >&2
+    return $RC_NETWORK
+  fi
+
+  # Bounce docker, make sure web comes back. Rootless docker is a user unit.
+  if [ "$rootless" = true ]; then
+    restart_cmd="systemctl --user restart docker"
+  else
+    restart_cmd="systemctl restart docker"
+  fi
+
+  if ! $restart_cmd; then
+    echo "ERROR - $release: failed to restart docker" >&2
+    return $RC_RESTART
+  fi
+  sleep 5
+  if ! docker compose -p "$project" ps --status running --format '{{.Service}}' \
+        | grep -qx web; then
+    echo "ERROR - $release: web did not survive docker restart" >&2
+    return $RC_RESTART
+  fi
+
+  # Clean up this iteration's project
+  (cd "$projdir" && docker compose -p "$project" down -v) >/dev/null 2>&1 || true
+
+  return $RC_OK
+}
+
+declare -a final_results
+failed_any=false
+
+for image in "${tier_1_images[@]}"; do
+  echo "====== Build Pipeline - Testing $image ======"
+  out=0
+  test_image "$image" || out=$?
+
+  if [ "$out" -gt "$RC_MAX" ]; then
+    echo "ERROR - $image returned unexpected code $out" >&2
+    out=$((RC_MAX + 1))
+  fi
+
+  final_results+=("$image: ${result_strings[$out]}")
+  [ "$out" -ne 0 ] && failed_any=true
+done
+
+echo
+echo "====== Test Summary ======"
+for res in "${final_results[@]}"; do
+  echo "$res"
+done
+
+if [ "$failed_any" = true ]; then
+  exit 1
+fi

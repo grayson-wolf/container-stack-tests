@@ -1,0 +1,122 @@
+#!/bin/bash
+
+# Tests the docker rootless install and uninstall flow
+# and runs the pipeline coherence test inside rootless
+#
+# Exits 3 if rootful docker worked on the non-root user
+# Exits 4 if the context is not the auto-set "rootless"
+# Exits 5 if the security options do not include "rootless"
+# Exits 6 if rootless docker did NOT work on the root user
+# Exits 7 if the dockerd-rootless-setuptool.sh installation fails
+# Exits 8 if the dockerd-rootless-setuptool.sh *uninstallation* fails
+# Exits 9 if rootful docker worked on the non-root user after an uninstall
+# Exits 10 if the systemd unit persists after an uninstall
+# Exits 11 if rootful docker did NOT work on root user after uninstall
+# Exits 12 if the coherence test failed in rootless
+
+readonly RC_OK=0
+readonly RC_ROOT_WORKED_NONROOT_BEFORE=3
+readonly RC_ROOTLESS_INSTALL=7
+readonly RC_CONTEXT_NOT_ROOTLESS=4
+readonly RC_DAEMON_NOT_ROOTLESS=5
+readonly RC_ROOTLESS_FAILED_NONROOT=6
+readonly RC_BUILD_FAILED=12
+readonly RC_ROOTLESS_UNINSTALL=8
+readonly RC_ROOT_WORKED_NONROOT_AFTER=9
+readonly RC_SYSTEMD_UNIT_NOT_GONE=10
+readonly RC_ROOT_FAILED_AFTER=11
+
+
+run_test() {
+  # Verify that, before rootless, docker fails (as it is on root)
+  if ! docker ps 2>&1 | grep 'permission denied'; then
+      echo "ERROR: Rootful docker worked on non-root user BEFORE install"
+      exit $RC_ROOT_WORKED_NONROOT_BEFORE
+  fi
+
+  # Install docker rootless
+  if ! /usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh install; then
+      echo "ERROR: Docker rootless installation failed"
+      exit $RC_ROOTLESS_INSTALL
+  fi
+
+  # Check if docker runs and has context rootless
+  if [ "$(docker context show)" != "rootless" ]; then
+      echo "ERROR: Active Docker context is not rootless"
+      exit $RC_CONTEXT_NOT_ROOTLESS
+  fi
+
+  # Check if the security options include rootless
+  if ! docker info --format '{{json .SecurityOptions}}' | grep -q rootless; then
+      echo "ERROR: Docker daemon is not running in rootless mode"
+      exit $RC_DAEMON_NOT_ROOTLESS
+  fi
+
+  # Verify that after rootless, docker works
+  if docker ps 2>&1 | grep 'permission denied'; then
+      echo "ERROR: Rootless docker did not work on non-root user"
+      exit $RC_ROOTLESS_FAILED_NONROOT
+  fi
+  # Run the build pipeline test rootless. build-pipeline-test is driver-aware
+  # and runs its fullest rootless-safe subset (skips the system-ctr handoff and
+  # uses the user unit for the restart check).
+  if ! bash "$(dirname "$0")/build-pipeline-test"; then
+      echo "ERROR: Build pipeline test failed in rootless"
+      exit $RC_BUILD_FAILED
+  fi
+
+
+  # Uninstall docker rootless
+  if ! /usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh uninstall; then
+      echo "ERROR: Docker rootless uninstallation failed"
+      exit $RC_ROOTLESS_UNINSTALL
+  fi
+
+  # Verify that, after rootless is gone, docker fails (as it is on root)
+  if ! docker ps 2>&1 | grep 'permission denied'; then
+      echo "ERROR: Rootful docker worked on non-root user AFTER uninstall"
+      exit $RC_ROOT_WORKED_NONROOT_AFTER
+  fi
+
+  # Check that the systemd user unit is gone
+  if test -e ~/.config/systemd/user/docker.service; then
+      echo "ERROR: systemd user unit is not gone after uninstall"
+      exit $RC_SYSTEMD_UNIT_NOT_GONE
+  fi
+
+  # Verify that root*ful* docker works after uninstall
+  if ! sudo docker ps 2>&1; then
+      echo "ERROR: root*ful* docker failed after uninstall"
+      exit $RC_ROOT_FAILED_AFTER
+  fi
+}
+
+
+# Make sure the test is being run as a non-root user
+# we don't explicitly require root and drop, but just in case
+# infrastructure runs all tests as root, we explicitly check both cases
+if [ "$(whoami)" == "root" ]; then
+  NON_ROOT_USER="$AUTOPKGTEST_NORMAL_USER"
+
+  if [ -z "$NON_ROOT_USER" ]; then
+    NON_ROOT_USER="docker-test-user"
+    echo "No standard user found. Creating $NON_ROOT_USER..."
+    useradd -m -s /bin/bash "$NON_ROOT_USER"
+  fi
+
+  SELF="$(readlink -f "$0")"
+
+  # Enable lingering so the non-root user has a persistent systemd user manager
+  # (user@UID.service) to attach to, even with no interactive login.
+  loginctl enable-linger "$NON_ROOT_USER"
+
+  # Run the test as the non-root user inside their systemd user session, and
+  # PROPAGATE THE EXIT CODE. `machinectl shell` allocates a session but
+  # explicitly does NOT propagate the command's exit status (see machinectl(1)),
+  # which previously made a failing run_test report as PASS. systemd-run with
+  # --pipe --wait --collect runs in the session and returns the real status.
+  exec systemd-run --user --machine="$NON_ROOT_USER"@.host --pipe --wait --collect \
+    -- "$SELF" "$@"
+else
+  run_test
+fi

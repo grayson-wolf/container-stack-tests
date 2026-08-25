@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+#
+# Smoke test for many images with the container stack
+# If the really common images are failing, it's probably
+# a deeper problem, so we're testing many of them.
+#
+# Exits 1 if at least one image failed its smoke test
+. "$(dirname "$0")/lib/common.sh"
+. "$(dirname "$0")/lib/image_fetching.sh"
+set_strict
+
+readonly RC_OK=0
+readonly RC_SKIP=1
+readonly RC_START=2
+readonly RC_DIED=3
+readonly RC_MAX=$RC_DIED
+
+result_strings=(
+  "OK"              # 0
+  "SKIPPED"         # 1
+  "COULDN'T START"  # 2
+  "CONTAINER DIED"  # 3
+  "UNKNOWN ERROR"   # 4 (out-of-range overflow; > RC_MAX maps here)
+)
+
+# Test a single Tier 2 image for basic functions
+# Returns
+#   0 on success
+#   1 if the image couldn't be fetched
+#   2 if the image failed to run
+#   3 if the container died
+test_image() {
+  local image="$1"
+
+  if ! fetch_tier_2_image "$image"; then
+      return $RC_SKIP
+  fi
+
+  # Some databases require dummy env vars to start cleanly without crashing.
+  local cid
+  cid=$(docker run -d \
+    -e MYSQL_ALLOW_EMPTY_PASSWORD=yes \
+    -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -e ALLOW_EMPTY_PASSWORD=yes \
+    "$image" 2>/dev/null || true)
+
+  if [ -z "$cid" ]; then
+    echo "ERROR - $image failed to start (docker run failed)" >&2
+    return $RC_START
+  fi
+
+  # Ensure the container gets cleaned up even if the script is interrupted
+  defer "docker rm -f '$cid' >/dev/null 2>&1 || true"
+
+  # make sure everything's ready and give bad images time to actually fail
+  sleep 5
+
+  # Check if the container is still running
+  local state
+  state=$(docker inspect -f '{{.State.Status}}' "$cid")
+
+  if [ "$state" == "exited" ]; then
+    # Some images (like hello-world or base ubuntu) exit instantly by design.
+    # If it exited with code 0, we consider it a success.
+    local exit_code
+    exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
+
+    if [ "$exit_code" -eq 0 ]; then
+      docker rm -f "$cid" >/dev/null 2>&1
+      return $RC_OK
+    else
+      echo "ERROR - $image crashed shortly after starting (Exit Code: $exit_code)" >&2
+      docker rm -f "$cid" >/dev/null 2>&1
+      return $RC_START
+    fi
+  fi
+
+  # Liveness check that does NOT assume a shell exists in the image.
+  # Distroless/chisel images (e.g. ubuntu/nginx, whose entrypoint is pebble)
+  # have no /bin/echo, so `docker exec ... echo true` won't work.
+  #
+  # So we just assert that the container is running and check if
+  # its init process is stil alive
+  local running
+  running=$(docker inspect -f '{{.State.Running}}' "$cid")
+  if [ "$running" != "true" ]; then
+    echo "ERROR - $image is not running after start" >&2
+    docker rm -f "$cid" >/dev/null 2>&1
+    return $RC_DIED
+  fi
+
+  if ! docker top "$cid" >/dev/null 2>&1; then
+    echo "ERROR - $image is running, but its process could not be listed (docker top)" >&2
+    docker rm -f "$cid" >/dev/null 2>&1
+    return $RC_DIED
+  fi
+
+  docker rm -f "$cid" >/dev/null 2>&1
+  return $RC_OK
+}
+
+declare -a final_results
+failed_any=false
+
+for image in "${tier_2_images[@]}"; do
+  echo "====== Image Smoke - Testing $image ======"
+
+  out=0
+  test_image "$image" || out=$?
+
+  if [ "$out" -gt "$RC_MAX" ]; then
+    echo "ERROR - $image returned unexpected code $out" >&2
+    out=$((RC_MAX + 1))
+  fi
+
+  final_results+=("$image: ${result_strings[$out]}")
+
+  # > 1 because 1 (SKIPPED) isn't counted as a failure
+  if [ "$out" -gt "$RC_SKIP" ]; then
+    failed_any=true
+  fi
+done
+
+echo ""
+echo "====== Test Summary ======"
+for res in "${final_results[@]}"; do
+  echo "$res"
+done
+
+if [ "$failed_any" = true ]; then
+  exit 1
+fi

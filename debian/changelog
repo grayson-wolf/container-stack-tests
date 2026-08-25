@@ -1,0 +1,7 @@
+container-stack-tests (1ubuntu) stonking; urgency=medium
+
+  * Initial packaging: shared autopkgtest meta-package for the Ubuntu container
+    stack (containerd-app, containerd-stable, docker-buildx, docker-compose-v2,
+    docker.io-app, runc-app, runc-stable).
+
+ -- Grayson Wolf <grayson.wolf@canonical.com>  Mon, 17 Aug 2026 10:00:00 +0000

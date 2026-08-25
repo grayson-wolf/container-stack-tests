@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+# Smoke test for the docker.io daemon: verifies the packaged engine comes up,
+# can run a container, and reports a coherent view of the stack.
+
+. "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/image_fetching.sh"
+set_strict
+set_x
+
+defer 'journalctl -u docker | tail'
+
+docker version
+docker info
+
+# Pull the latest stable Ubuntu and run it.
+base="$(smoke_base_image)"
+output="$(docker run --rm "$base" echo success)"
+[ "$output" = 'success' ]

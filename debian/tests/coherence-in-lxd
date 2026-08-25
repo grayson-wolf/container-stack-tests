@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# Runs the coherence test (pipeline-coherence) inside an LXD container.
+#
+. "$(dirname "$0")/lib/common.sh"
+. "$(dirname "$0")/lib/lxd.sh"
+set_strict
+set_x
+
+# Which track to test: app (default) or stable. Passed as $1 by the control
+# stanzas; selects the matching containerd/runc binaries in the guest.
+variant="${1:-app}"
+case "$variant" in
+	app)
+		containerd_pkg=containerd
+		runc_pkg=runc
+		;;
+	stable)
+		containerd_pkg=containerd-stable
+		runc_pkg=runc-stable
+		;;
+	*)
+		echo "coherence-in-lxd: unknown variant '$variant' (expected app|stable)" >&2
+		exit 2
+		;;
+esac
+
+arch="$(dpkg --print-architecture)"
+suite="$(lsb_release -cs)"
+
+# Unique names for this run to avoid collisions on a shared/again run.
+cname="$(unique_name lxd-coherence)"
+poolname="${cname}-pool"
+volname="${cname}-vol"
+
+############
+# LXD Setup
+############
+
+lxd_install          # exits 77 if snap install / waitready fails
+lxd init --auto
+lxd_set_proxy        # forward http(s)_proxy/no_proxy to the LXD daemon
+
+lxc storage create "$poolname" btrfs
+defer "lxc storage delete '$poolname' >/dev/null 2>&1 || true"
+
+lxc storage volume create "$poolname" "$volname"
+defer "lxc storage volume delete '$poolname' '$volname' >/dev/null 2>&1 || true"
+
+if ! lxd_launch_nested "$cname" "ubuntu-daily:${suite}/${arch}"; then
+	echo "coherence-in-lxd: failed to launch guest image (external); skipping" >&2
+	exit 77
+fi
+defer "lxc delete --force '$cname' >/dev/null 2>&1 || true"
+
+lxc storage volume attach "$poolname" "$volname" "$cname" /var/lib/containerd
+
+lxd_wait_network "$cname"
+
+
+#####################
+# Docker Installation
+#####################
+
+# Use the host's apt configuration inside the guest so `apt install docker.io`
+# installs the version under test (autopkgtest arranges the host's apt sources).
+lxc exec "$cname" -- rm -rf /etc/apt
+lxc exec "$cname" -- mkdir /etc/apt
+tar -cC /etc/apt . | lxc exec "$cname" -- tar -xC /etc/apt
+for local_source in $(apt-get indextargets | grep-dctrl -F URI -e '^file:/' -sURI); do
+	local_source="${local_source#file:}"
+	local_dir="$(dirname "$local_source")"
+	lxc exec "$cname" -- mkdir -p "$local_dir"
+	tar -cC "$local_dir" . | lxc exec "$cname" -- tar -xC "$local_dir"
+done
+
+# Install docker.io plus the variant's containerd/runc (app or stable track).
+lxc exec "$cname" -- apt-get update
+lxc exec "$cname" --env DEBIAN_FRONTEND=noninteractive -- apt-get install -y \
+	docker.io "$containerd_pkg" "$runc_pkg"
+
+#####################
+# Guest testbed setup
+#####################
+
+# Make the test tree available inside the guest
+lxc exec "$cname" -- mkdir -p /tmp/autopkgtest/debian/tests
+tar -cC debian/tests . | lxc exec "$cname" -- tar -xC /tmp/autopkgtest/debian/tests
+
+# Proxy drop-in for the *guest's* docker daemon
+lxc exec "$cname" \
+	--env http_proxy="${http_proxy:-}" \
+	--env https_proxy="${https_proxy:-}" \
+	--env no_proxy="${no_proxy:-}" \
+	-- bash -c '. /tmp/autopkgtest/debian/tests/lib/common.sh && write_proxy_dropin docker.service'
+
+#####################
+# The actual test
+#####################
+
+echo "====== Running pipeline-coherence inside LXD guest ======"
+lxc exec "$cname" \
+	--env AUTOPKGTEST_TEST_ARCH="${AUTOPKGTEST_TEST_ARCH:-$arch}" \
+	--env http_proxy="${http_proxy:-}" \
+	--env https_proxy="${https_proxy:-}" \
+	--env no_proxy="${no_proxy:-}" \
+	-- bash /tmp/autopkgtest/debian/tests/pipeline-coherence
+
+echo "====== LXD coherence test completed ======"

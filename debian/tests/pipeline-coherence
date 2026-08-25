@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+#
+# Pipeline coherence tests for the container stack
+#
+# Exits 3 if versions mismatched.
+# Exits 4 if at least one image failed its coherence test
+. "$(dirname "$0")/lib/common.sh"
+. "$(dirname "$0")/lib/image_fetching.sh"
+set_strict
+
+readonly RC_OK=0
+readonly RC_RUNTIME=1
+readonly RC_APPARMOR=2
+readonly RC_CGROUP_VER=3
+readonly RC_CGROUP_MEM=4
+readonly RC_RUN=5
+readonly RC_FETCH=6
+readonly RC_MAX=$RC_FETCH
+
+result_strings=(
+  "OK"                    # 0
+  "BAD RUNTIME"           # 1
+  "BAD APPARMOR"          # 2
+  "BAD CGROUP VER"        # 3
+  "BAD CGROUP MEMORY MAX" # 4
+  "COULDN'T RUN"          # 5
+  "FETCH FAILED"          # 6
+  "UNKNOWN ERROR"         # 7 (out-of-range overflow; > RC_MAX maps here)
+)
+
+# Run a given Tier 1 Image (an actual Ubuntu base image) through the coherence pipeline
+# Exit statues:
+# 0 - Success
+# 1 - The runtime did not match the archive for this image
+# 2 - One of the AppArmor profiles was not correct
+# 3 - The cgroup version was not "systemd 2"
+# 4 - The cgroup memory max of 64M was not honored
+# 5 - The container failed to run at all
+# 6 - The image fetch failed outright
+# 7 - Something Weird Happened (somehow, this returned >= 6)
+test_image() {
+  local release="$1"
+  local arch="${AUTOPKGTEST_TEST_ARCH:-amd64}"
+
+  echo "Fetching $release $arch..."
+  if ! fetch_tier_1_tar "$release" "$arch"; then
+    echo "ERROR - Failed to fetch image tarball for $release" >&2
+    return $RC_FETCH
+  fi
+
+  # Import the image into docker for the tests
+  if ! docker import image.tar.gz "ubuntu-base:$release" > /dev/null 2>&1; then
+    echo "ERROR - Failed to import image for $release" >&2
+    return $RC_FETCH
+  fi
+
+  # ======== Runtime Coherence Check ========
+
+  # Run this image in the archive runtime explicitly with our registered runtime
+  local cid_archive
+  cid_archive=$(docker run -d --rm --runtime=archive-runc "ubuntu-base:$release" sleep 60 2>/dev/null || true)
+  if [ -z "$cid_archive" ]; then
+    echo "ERROR - $release failed to start with archive-runc" >&2
+    return $RC_RUN
+  fi
+
+  local archive_runtime
+  archive_runtime=$(docker inspect -f '{{.HostConfig.Runtime}}' "$cid_archive" 2>/dev/null || true)
+  docker stop "$cid_archive" > /dev/null 2>&1 || true
+
+  # Run the image using docker itself (default runtime)
+  local cid_default
+  cid_default=$(docker run -d --rm "ubuntu-base:$release" sleep 60 2>/dev/null || true)
+  if [ -z "$cid_default" ]; then
+    echo "ERROR - $release failed to start with default runtime" >&2
+    return $RC_RUN
+  fi
+
+  local default_runtime
+  default_runtime=$(docker inspect -f '{{.HostConfig.Runtime}}' "$cid_default" 2>/dev/null || true)
+  docker stop "$cid_default" > /dev/null 2>&1 || true
+
+  if [ -z "$archive_runtime" ] || [ -z "$default_runtime" ]; then
+    echo "ERROR - $release runtime mismatch/failure - archive: $archive_runtime - default: $default_runtime"
+    return $RC_RUNTIME
+  fi
+
+  # ======== AppArmor Coherence Check ========
+
+  # unconfined apparmor
+  local cid_aa_unconfined
+  cid_aa_unconfined=$(docker run -d --rm --security-opt apparmor=unconfined "ubuntu-base:$release" sleep 60 2>/dev/null || true)
+  if [ -z "$cid_aa_unconfined" ]; then
+    echo "ERROR - $release failed to start with apparmor=unconfined" >&2
+    return $RC_RUN
+  fi
+
+  local profile_unconfined
+  profile_unconfined=$(docker inspect -f '{{.AppArmorProfile}}' "$cid_aa_unconfined" 2>/dev/null || true)
+  docker stop "$cid_aa_unconfined" > /dev/null 2>&1 || true
+
+  if [ "$profile_unconfined" != "unconfined" ] && [ "$profile_unconfined" != "" ]; then
+    echo "ERROR - $release AppArmor mismatch - expected 'unconfined', got '$profile_unconfined'"
+    return $RC_APPARMOR
+  fi
+
+  # default apparmor
+  local cid_aa_default
+  cid_aa_default=$(docker run -d --rm --security-opt apparmor=docker-default "ubuntu-base:$release" sleep 60 2>/dev/null || true)
+  if [ -z "$cid_aa_default" ]; then
+    echo "ERROR - $release failed to start with apparmor=docker-default" >&2
+    return $RC_RUN
+  fi
+
+  local profile_default
+  profile_default=$(docker inspect -f '{{.AppArmorProfile}}' "$cid_aa_default" 2>/dev/null || true)
+  docker stop "$cid_aa_default" > /dev/null 2>&1 || true
+
+  # check if it starts with docker-default
+  if [[ "$profile_default" != "docker-default"* ]]; then
+    echo "ERROR - $release AppArmor mismatch - expected 'docker-default', got '$profile_default'"
+    return $RC_APPARMOR
+  fi
+
+  # ======== cgroup Coherence Check ========
+
+  local cgroup_ver
+  cgroup_ver=$(docker info -f '{{.CgroupDriver}} {{.CgroupVersion}}' 2>/dev/null || true)
+
+  if [ "$cgroup_ver" != "systemd 2" ]; then
+    echo "ERROR - $release cgroup version bad - should be 'systemd 2', but it is '$cgroup_ver'"
+    return $RC_CGROUP_VER
+  fi
+
+  # Run with --memory=64m
+  local cid_mem
+  cid_mem=$(docker run -d --rm --memory=64m "ubuntu-base:$release" sleep 60 2>/dev/null || true)
+  if [ -z "$cid_mem" ]; then
+    echo "ERROR - $release failed to start with --memory limit" >&2
+    return $RC_RUN
+  fi
+
+  # Find the cgroup v2 memory restriction file
+  local mem_file="/sys/fs/cgroup/system.slice/docker-${cid_mem}.scope/memory.max"
+  if [ ! -f "$mem_file" ]; then
+      mem_file="/sys/fs/cgroup/system.slice/docker.service/docker-${cid_mem}.scope/memory.max"
+  fi
+
+  local memory_max="NOT_FOUND"
+  if [ -f "$mem_file" ]; then
+      memory_max=$(cat "$mem_file" 2>/dev/null || echo "NOT_FOUND")
+  fi
+
+  docker stop "$cid_mem" > /dev/null 2>&1 || true
+
+  if [ "$memory_max" != "67108864" ]; then
+    echo "ERROR - $release cgroup failure - should've been 67108864 (64M), but it is $memory_max"
+    return $RC_CGROUP_MEM
+  fi
+
+  return $RC_OK
+}
+
+echo "===== Version Coherence ====="
+
+archive_runc_ver=$(runc --version 2>/dev/null | awk '/^runc version/ {print $3}' || true)
+docker_runc_ver=$(docker version -f '{{range .Server.Components}}{{if eq .Name "runc"}}{{.Version}}{{end}}{{end}}' 2>/dev/null || true)
+
+if [ -z "$archive_runc_ver" ] || [ -z "$docker_runc_ver" ] || [ "$archive_runc_ver" != "$docker_runc_ver" ]; then
+  echo "ERROR: Version incoherence -- archive versions and docker versions mismatch:"
+  echo "Archive Versions - runc: ${archive_runc_ver:-UNKNOWN}"
+  echo "Docker Reported Versions - runc: ${docker_runc_ver:-UNKNOWN}"
+  exit 3
+fi
+
+echo "===== Registering archive-runc ====="
+mkdir -p /etc/docker
+cat <<EOF > /etc/docker/daemon.json
+{
+  "runtimes": {
+    "archive-runc": {
+      "path": "/usr/sbin/runc"
+    }
+  }
+}
+EOF
+systemctl restart docker
+
+declare -a final_results
+failed_any=false
+
+for image in "${tier_1_images[@]}"; do
+  echo "====== Pipeline Coherence - Testing $image ======"
+
+  out=0
+  test_image "$image" || out=$?
+
+  if [ "$out" -gt "$RC_MAX" ]; then out=$((RC_MAX + 1)); fi
+
+  final_results+=("$image: ${result_strings[$out]}")
+
+  if [ "$out" -ne 0 ]; then
+    failed_any=true
+  fi
+done
+
+echo ""
+echo "====== Test Summary ======"
+for res in "${final_results[@]}"; do
+  echo "$res"
+done
+
+if [ "$failed_any" = true ]; then
+  exit 4
+fi

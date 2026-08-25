@@ -1,0 +1,28 @@
+#!/bin/bash
+. "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/image_fetching.sh"
+set_strict
+set_x
+
+runc --version
+
+# Build a runnable OCI bundle from the latest stable
+release="${tier_1_images[1]}"
+arch="${AUTOPKGTEST_TEST_ARCH:-$(dpkg --print-architecture)}"
+
+(cd "$tempDir" && fetch_tier_1_tar "$release" "$arch")
+
+bundle="$tempDir/bundle"
+mkdir -p "$bundle/rootfs"
+tar -xzf "$tempDir/image.tar.gz" -C "$bundle/rootfs"
+
+# Setup runc config
+(cd "$bundle" && runc spec)
+sed -i -E 's/"terminal":[[:space:]]+true,/"terminal": false,/' "$bundle/config.json"
+sed -i -E 's#"sh"#"/bin/sh","-c","echo success"#' "$bundle/config.json"
+
+# run it and capture the output
+output="$(runc run --bundle "$bundle" "$(unique_name)")"
+
+# ensure the output was exactly what we expected
+[ "$output" = 'success' ]

@@ -1,0 +1,32 @@
+#!/bin/bash
+. "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/image_fetching.sh"
+set_strict
+set_x
+
+# Create a new builder
+docker buildx create --name mybuilder --use --bootstrap
+defer 'docker buildx rm -f mybuilder >/dev/null 2>&1 || true'
+
+# Check the status of the builder
+docker buildx inspect mybuilder | grep Status | grep running
+
+# Set up latest Ubuntu stable release for building.
+base="$(smoke_base_image)"
+mkdir -p "$tempDir/ctx"
+cp "$tempDir/image.tar.gz" "$tempDir/ctx/rootfs.tar.gz"
+cat > "$tempDir/ctx/Dockerfile" <<EOF
+FROM scratch
+ADD rootfs.tar.gz /
+CMD ["/bin/sh", "-c", "grep ^VERSION= /etc/os-release"]
+EOF
+
+# Build (single-arch, default builder) and load into the daemon.
+docker buildx build --builder default --pull=false --load \
+  -t hello-buildx:buildx-latest "$tempDir/ctx"
+
+# Check the image was loaded
+docker image ls | grep hello-buildx | grep buildx-latest
+
+# Run a container based on the built image and confirm it's the base.
+docker run --rm hello-buildx:buildx-latest | grep VERSION

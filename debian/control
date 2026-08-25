@@ -1,0 +1,18 @@
+Source: container-stack-tests
+Section: devel
+Priority: optional
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.2
+Testsuite: autopkgtest
+Rules-Requires-Root: no
+Vcs-Git: https://git.launchpad.net/ubuntu/+source/container-stack-tests
+Vcs-Browser: https://git.launchpad.net/ubuntu/+source/container-stack-tests
+
+Package: container-stack-tests
+Architecture: all
+Depends: ca-certificates, docker.io, ${misc:Depends}
+Description: shared autopkgtest suite for the Ubuntu container stack
+ This meta-package carries the autopkgtest suite that is run
+ against the Ubuntu container stack: containerd-app, containerd-stable,
+ docker-buildx, docker-compose-v2, docker.io-app, runc-app, and runc-stable.

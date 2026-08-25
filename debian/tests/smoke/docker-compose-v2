@@ -1,0 +1,52 @@
+#!/bin/bash
+#
+# Smoke test for docker-compose-v2. Brings up a two-service project using
+# latest Ubuntu stable, checks to make sure eveyrthing is coherent
+# and ports are responding as they should.
+. "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/image_fetching.sh"
+set_strict
+set_x
+
+base="$(smoke_base_image)"
+
+projdir="$tempDir/compose"
+mkdir -p "$projdir"
+# A minimal HTTP responder. busybox isn't in ubuntu-base; netcat isn't; python
+# isn't. perl-base IS in ubuntu-base and includes IO::Socket::INET, so use it.
+cat > "$projdir/server.pl" <<'EOF'
+use IO::Socket::INET;
+my $server = IO::Socket::INET->new(
+    LocalAddr => '0.0.0.0',
+    LocalPort => 8000,
+    Listen    => 10,
+    ReuseAddr => 1,
+) or die "cannot listen on 8000: $!";
+while (my $client = $server->accept()) {
+    print $client "HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    close $client;
+}
+EOF
+
+cat > "$projdir/compose.yaml" <<EOF
+services:
+  web:
+    image: $base
+    command: ["perl", "/server.pl"]
+    volumes: ["$projdir/server.pl:/server.pl:ro"]
+    ports: ["18000:8000"]
+  sidecar:
+    image: $base
+    command: ["sleep", "inf"]
+EOF
+
+# Bring the project up.
+(cd "$projdir" && docker compose up -d)
+defer "(cd '$projdir' && docker compose down -v) >/dev/null 2>&1 || true"
+
+# Both services running.
+docker compose -f "$projdir/compose.yaml" ps --status running --format '{{.Service}}' | grep -qx web
+docker compose -f "$projdir/compose.yaml" ps --status running --format '{{.Service}}' | grep -qx sidecar
+
+# The web service responds on its published port (retry while it starts).
+curl_retry http://localhost:18000 | grep -qx ok
