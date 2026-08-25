@@ -2,6 +2,9 @@
 #
 # Smoke test for the docker.io daemon: verifies the packaged engine comes up,
 # can run a container, and reports a coherent view of the stack.
+#
+# Exits 1 on failure.
+# Exits 2 if the journal check finds err-severity (or worse) messages logged by docker/containerd.
 
 . "$(dirname "$0")/../lib/common.sh"
 . "$(dirname "$0")/../lib/image_fetching.sh"
@@ -17,3 +20,6 @@ docker info
 base="$(smoke_base_image)"
 output="$(docker run --rm "$base" echo success)"
 [ "$output" = 'success' ]
+
+# Nothing at err severity or worse should have been logged by docker/containerd
+check_journal 2

@@ -2,6 +2,9 @@
 #
 # Runs the coherence test (pipeline-coherence) inside an LXD container.
 #
+# Exits 2 on unknown variant (this should never happen)
+# Exits 3 if the journal check finds err-severity (or worse) messages logged
+#   by the *guest's* container stack.
 . "$(dirname "$0")/lib/common.sh"
 . "$(dirname "$0")/lib/lxd.sh"
 set_strict
@@ -107,3 +110,6 @@ lxc exec "$cname" \
 	-- bash /tmp/autopkgtest/debian/tests/pipeline-coherence
 
 echo "====== LXD coherence test completed ======"
+
+# Nothing at err severity or worse should have been logged by the guest's stack
+check_journal 3

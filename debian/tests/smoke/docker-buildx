@@ -1,4 +1,10 @@
 #!/bin/bash
+#
+# docker-buildx smoke test: builds a single-arch image from the latest stable
+# Ubuntu base and runs it.
+#
+# Exits 1 on failure.
+# Exits 2 if the journal check finds err-severity (or worse) messages logged by docker/containerd.
 . "$(dirname "$0")/../lib/common.sh"
 . "$(dirname "$0")/../lib/image_fetching.sh"
 set_strict
@@ -30,3 +36,6 @@ docker image ls | grep hello-buildx | grep buildx-latest
 
 # Run a container based on the built image and confirm it's the base.
 docker run --rm hello-buildx:buildx-latest | grep VERSION
+
+# Nothing at err severity or worse should have been logged by docker/containerd
+check_journal 2

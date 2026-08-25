@@ -13,6 +13,10 @@
 # Exits 10 if the systemd unit persists after an uninstall
 # Exits 11 if rootful docker did NOT work on root user after uninstall
 # Exits 12 if the coherence test failed in rootless
+# Exits 13 if the journal check finds err-severity (or worse) messages
+#           logged by docker/containerd.
+
+. "$(dirname "$0")/lib/common.sh"
 
 readonly RC_OK=0
 readonly RC_ROOT_WORKED_NONROOT_BEFORE=3
@@ -25,6 +29,7 @@ readonly RC_ROOTLESS_UNINSTALL=8
 readonly RC_ROOT_WORKED_NONROOT_AFTER=9
 readonly RC_SYSTEMD_UNIT_NOT_GONE=10
 readonly RC_ROOT_FAILED_AFTER=11
+readonly RC_JOURNAL_ERROR=13
 
 
 run_test() {
@@ -89,6 +94,9 @@ run_test() {
       echo "ERROR: root*ful* docker failed after uninstall"
       exit $RC_ROOT_FAILED_AFTER
   fi
+
+  # Nothing at err severity or worse should have been logged by docker/containerd
+  check_journal $RC_JOURNAL_ERROR
 }
 
 

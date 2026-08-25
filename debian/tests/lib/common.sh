@@ -63,3 +63,27 @@ curl_retry() {
   return 1
 }
 
+# check_journal <exit_code> [unit ...] — assert nothing at err severity or worse
+# was logged to the journal for the given units (default: docker containerd).
+check_journal() {
+	local code="$1"; shift
+	local units=("$@")
+	[ "${#units[@]}" -gt 0 ] || units=(docker containerd)
+
+	local args=()
+	local u
+	for u in "${units[@]}"; do
+		args+=(-u "$u")
+	done
+
+	# -p err = priority err and above (err, crit, alert, emerg)
+	local errors
+	errors="$(journalctl --no-pager -q -p err "${args[@]}" 2>/dev/null || true)"
+
+	if [ -n "$errors" ]; then
+		echo "check_journal: errors logged for: ${units[*]}" >&2
+		echo "$errors" >&2
+		exit "$code"
+	fi
+}
+

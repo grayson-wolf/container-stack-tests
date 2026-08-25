@@ -1,4 +1,9 @@
 #!/bin/bash
+#
+# runc smoke test: builds a runnable OCI bundle from the latest stable Ubuntu
+# base and runs it.
+#
+# Exits 1 on failure.
 . "$(dirname "$0")/../lib/common.sh"
 . "$(dirname "$0")/../lib/image_fetching.sh"
 set_strict

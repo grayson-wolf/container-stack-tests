@@ -3,6 +3,9 @@
 # Smoke test for docker-compose-v2. Brings up a two-service project using
 # latest Ubuntu stable, checks to make sure eveyrthing is coherent
 # and ports are responding as they should.
+#
+# Exits 1 on failure.
+# Exits 2 if the journal check finds err-severity (or worse) messages logged by docker/containerd.
 . "$(dirname "$0")/../lib/common.sh"
 . "$(dirname "$0")/../lib/image_fetching.sh"
 set_strict
@@ -50,3 +53,6 @@ docker compose -f "$projdir/compose.yaml" ps --status running --format '{{.Servi
 
 # The web service responds on its published port (retry while it starts).
 curl_retry http://localhost:18000 | grep -qx ok
+
+# Nothing at err severity or worse should have been logged by docker/containerd
+check_journal 2

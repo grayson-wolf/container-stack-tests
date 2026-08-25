@@ -2,6 +2,8 @@
 #
 # Build pipeline test for the container stack
 # Exits 1 if any image fails its test
+# Exits 2 if the journal check finds err-severity (or worse) messages
+#          logged by docker/containerd.
 #
 . "$(dirname "$0")/lib/common.sh"
 . "$(dirname "$0")/lib/image_fetching.sh"
@@ -223,3 +225,6 @@ done
 if [ "$failed_any" = true ]; then
   exit 1
 fi
+
+# Nothing at err severity or worse should have been logged by docker/containerd
+check_journal 2
