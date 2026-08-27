@@ -2,7 +2,7 @@
 # Pipeline Coherence
 ########################################################
 
-Test-Command: debian/tests/pipeline-coherence
+Test-Command: pipeline-coherence
 Depends: docker.io, runc, containerd, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=pipeline-coherence-app
@@ -11,7 +11,7 @@ Features: test-name=pipeline-coherence-app
 # Build Pipeline Test
 #########################################################
 
-Test-Command: debian/tests/build-pipeline-test
+Test-Command: build-pipeline-test
 Depends: docker.io, docker-buildx, docker-compose-v2, containerd, runc, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=build-pipeline-test-app
@@ -20,7 +20,7 @@ Features: test-name=build-pipeline-test-app
 # Many Image Smoke Test (Tier 2 Images)
 #########################################################
 
-Test-Command: debian/tests/many-image-smoke
+Test-Command: many-image-smoke
 Depends: docker.io, containerd, runc
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=many-image-smoke-app
@@ -29,7 +29,7 @@ Features: test-name=many-image-smoke-app
 # Coherence in LXD (nested environment)
 ########################################################
 
-Test-Command: debian/tests/coherence-in-lxd app
+Test-Command: coherence-in-lxd app
 Depends: dctrl-tools, snapd, lsb-release, containerd, runc
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=coherence-in-lxd-app
@@ -38,7 +38,7 @@ Features: test-name=coherence-in-lxd-app
 # Build in Rootless
 ########################################################
 
-Test-Command: debian/tests/build-in-rootless
+Test-Command: build-in-rootless
 Depends: docker.io, docker-buildx, docker-compose-v2, containerd, runc, rootlesskit, uidmap, slirp4netns, fuse-overlayfs, systemd-container, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=build-in-rootless-app
@@ -48,7 +48,7 @@ Features: test-name=build-in-rootless-app
 # Smoke - docker.io-app
 #########################################################
 
-Test-Command: debian/tests/smoke/docker
+Test-Command: smoke/docker
 Depends: docker.io, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-docker
@@ -57,12 +57,12 @@ Features: test-name=smoke-docker
 # Smoke - runc
 #########################################################
 
-Test-Command: debian/tests/smoke/runc
+Test-Command: smoke/runc
 Depends: runc, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-runc-app
 
-Test-Command: debian/tests/smoke/runc
+Test-Command: smoke/runc
 Depends: runc-stable, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-runc-stable
@@ -71,12 +71,12 @@ Features: test-name=smoke-runc-stable
 # Smoke - containerd
 #########################################################
 
-Test-Command: debian/tests/smoke/containerd
+Test-Command: smoke/containerd
 Depends: containerd, ca-certificates, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-containerd-app
 
-Test-Command: debian/tests/smoke/containerd
+Test-Command: smoke/containerd
 Depends: containerd-stable, ca-certificates, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-containerd-stable
@@ -85,7 +85,7 @@ Features: test-name=smoke-containerd-stable
 # Smoke - docker-buildx
 #########################################################
 
-Test-Command: debian/tests/smoke/docker-buildx
+Test-Command: smoke/docker-buildx
 Depends: docker-buildx, docker.io, wget
 Restrictions: isolation-machine needs-root allow-stderr
 Features: test-name=smoke-docker-buildx
@@ -94,7 +94,7 @@ Features: test-name=smoke-docker-buildx
 # Smoke - docker-compose-v2
 #########################################################
 
-Test-Command: debian/tests/smoke/docker-compose-v2
+Test-Command: smoke/docker-compose-v2
 Depends: docker-compose-v2, docker.io, curl, wget
 Restrictions: isolation-machine needs-root allow-stderr
 Features: test-name=smoke-docker-compose-v2
