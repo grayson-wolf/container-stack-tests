@@ -109,7 +109,9 @@ if [ "$(whoami)" == "root" ]; then
   if [ -z "$NON_ROOT_USER" ]; then
     NON_ROOT_USER="docker-test-user"
     echo "No standard user found. Creating $NON_ROOT_USER..."
-    useradd -m -s /bin/bash "$NON_ROOT_USER"
+    # systemd-journal so the check_journal at the end of run_test can read the
+    # system journal (a fresh user cannot, making the journal check vacuous).
+    useradd -m -s /bin/bash -G systemd-journal "$NON_ROOT_USER"
   fi
 
   SELF="$(readlink -f "$0")"
@@ -119,10 +121,7 @@ if [ "$(whoami)" == "root" ]; then
   loginctl enable-linger "$NON_ROOT_USER"
 
   # Run the test as the non-root user inside their systemd user session, and
-  # PROPAGATE THE EXIT CODE. `machinectl shell` allocates a session but
-  # explicitly does NOT propagate the command's exit status (see machinectl(1)),
-  # which previously made a failing run_test report as PASS. systemd-run with
-  # --pipe --wait --collect runs in the session and returns the real status.
+  # propagate the exit code.
   exec systemd-run --user --machine="$NON_ROOT_USER"@.host --pipe --wait --collect \
     -- "$SELF" "$@"
 else
