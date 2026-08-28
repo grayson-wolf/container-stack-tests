@@ -64,7 +64,10 @@ curl_retry() {
 }
 
 # check_journal <exit_code> [unit ...] — assert nothing at err severity or worse
-# was logged to the journal for the given units (default: docker containerd).
+# was logged to the journal for the given units (default: docker containerd)
+# since this test was started (really, since this module was sourced, which
+# always happens at the start of each test)
+JOURNAL_SINCE="$(date +'%Y-%m-%d %H:%M:%S')"
 check_journal() {
 	local code="$1"; shift
 	local units=("$@")
@@ -78,10 +81,10 @@ check_journal() {
 
 	# -p err = priority err and above (err, crit, alert, emerg)
 	local errors
-	errors="$(journalctl --no-pager -q -p err "${args[@]}" 2>/dev/null || true)"
+	errors="$(journalctl --no-pager -q -p err --since "$JOURNAL_SINCE" "${args[@]}" 2>/dev/null || true)"
 
 	if [ -n "$errors" ]; then
-		echo "check_journal: errors logged for: ${units[*]}" >&2
+		echo "check_journal: errors logged for: ${units[*]} (since $JOURNAL_SINCE)" >&2
 		echo "$errors" >&2
 		exit "$code"
 	fi
