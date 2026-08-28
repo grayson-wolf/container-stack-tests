@@ -16,6 +16,16 @@ defer 'journalctl -u docker | tail'
 docker version
 docker info
 
+# Make sure the daemon is socket-activated, active, and that the docker group owns it
+systemctl is-active docker.socket
+[ "$(stat -c %G /var/run/docker.sock)" = "docker" ]
+
+# Make sure a member of the docker group (not root) can talk to the daemon.
+grouptest_user="$(unique_name dockergroup)"
+useradd -M -s /bin/sh -G docker "$grouptest_user"
+defer "userdel '$grouptest_user' >/dev/null 2>&1 || true"
+su -s /bin/sh "$grouptest_user" -c 'docker ps' >/dev/null
+
 # Pull the latest stable Ubuntu and run it.
 base="$(smoke_base_image)"
 output="$(docker run --rm "$base" echo success)"
