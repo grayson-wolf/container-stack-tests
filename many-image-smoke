@@ -7,6 +7,7 @@
 # Exits 1 if at least one image failed its smoke test
 # Exits 2 if the journal check finds err-severity (or worse) messages
 #          logged by docker/containerd.
+# Exits 77 (skip) if every image failed to pull (registry/network broken).
 . "$(dirname "$0")/lib/common.sh"
 . "$(dirname "$0")/lib/image_fetching.sh"
 set_strict
@@ -103,6 +104,7 @@ test_image() {
 
 declare -a final_results
 failed_any=false
+skipped=0
 
 for image in "${tier_2_images[@]}"; do
   echo "====== Image Smoke - Testing $image ======"
@@ -117,8 +119,9 @@ for image in "${tier_2_images[@]}"; do
 
   final_results+=("$image: ${result_strings[$out]}")
 
-  # > 1 because 1 (SKIPPED) isn't counted as a failure
-  if [ "$out" -gt "$RC_SKIP" ]; then
+  if [ "$out" -eq "$RC_SKIP" ]; then
+    skipped=$((skipped + 1))
+  elif [ "$out" -gt "$RC_SKIP" ]; then
     failed_any=true
   fi
 done
@@ -128,6 +131,12 @@ echo "====== Test Summary ======"
 for res in "${final_results[@]}"; do
   echo "$res"
 done
+
+# Every image failed, something's wrong, skip the test instead of vacuously passing
+if [ "$skipped" -eq "${#tier_2_images[@]}" ]; then
+  echo "SKIP: all ${#tier_2_images[@]} images failed to pull" >&2
+  exit 77
+fi
 
 if [ "$failed_any" = true ]; then
   exit 1
