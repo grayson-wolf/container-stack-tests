@@ -18,12 +18,11 @@ defer 'docker buildx rm -f mybuilder >/dev/null 2>&1 || true'
 docker buildx inspect mybuilder | grep Status | grep running
 
 # Set up latest Ubuntu stable release for building.
+# Build FROM the imported base image.
 base="$(smoke_base_image)"
 mkdir -p "$tempDir/ctx"
-cp "$tempDir/image.tar.gz" "$tempDir/ctx/rootfs.tar.gz"
 cat > "$tempDir/ctx/Dockerfile" <<EOF
-FROM scratch
-ADD rootfs.tar.gz /
+FROM $base
 CMD ["/bin/sh", "-c", "grep ^VERSION= /etc/os-release"]
 EOF
 
