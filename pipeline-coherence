@@ -17,7 +17,8 @@ readonly RC_CGROUP_VER=3
 readonly RC_CGROUP_MEM=4
 readonly RC_RUN=5
 readonly RC_FETCH=6
-readonly RC_MAX=$RC_FETCH
+readonly RC_SECCOMP=7
+readonly RC_MAX=$RC_SECCOMP
 
 result_strings=(
   "OK"                    # 0
@@ -27,7 +28,8 @@ result_strings=(
   "BAD CGROUP MEMORY MAX" # 4
   "COULDN'T RUN"          # 5
   "FETCH FAILED"          # 6
-  "UNKNOWN ERROR"         # 7 (out-of-range overflow; > RC_MAX maps here)
+  "BAD SECCOMP"           # 7
+  "UNKNOWN ERROR"         # 8 (out-of-range overflow; > RC_MAX maps here)
 )
 
 # Run a given Tier 1 Image (an actual Ubuntu base image) through the coherence pipeline
@@ -39,7 +41,8 @@ result_strings=(
 # 4 - The cgroup memory max of 64M was not honored
 # 5 - The container failed to run at all
 # 6 - The image fetch failed outright
-# 7 - Something Weird Happened (somehow, this returned >= 6)
+# 7 - The default seccomp profile was not applied (mode != 2)
+# 8 - Something Weird Happened (somehow, this returned >= 8)
 test_image() {
   local release="$1"
   local arch="${AUTOPKGTEST_TEST_ARCH:-amd64}"
@@ -122,6 +125,18 @@ test_image() {
   if [[ "$profile_default" != "docker-default"* ]]; then
     echo "ERROR - $release AppArmor mismatch - expected 'docker-default', got '$profile_default'"
     return $RC_APPARMOR
+  fi
+
+  # ======== Seccomp Coherence Check ========
+
+  # The default seccomp profile must be applied (2 = SECCOMP_MODE_FILTER).
+  local seccomp_mode
+  seccomp_mode=$(docker run --rm "ubuntu-base:$release" \
+    awk '/^Seccomp:/ {print $2}' /proc/self/status 2>/dev/null || true)
+
+  if [ "$seccomp_mode" != "2" ]; then
+    echo "ERROR - $release seccomp mode bad - expected 2 (filter), got '$seccomp_mode'"
+    return $RC_SECCOMP
   fi
 
   # ======== cgroup Coherence Check ========
