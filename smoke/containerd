@@ -22,6 +22,15 @@ release="${tier_1_images[1]}"
 arch="${AUTOPKGTEST_TEST_ARCH:-$(dpkg --print-architecture)}"
 (cd "$tempDir" && fetch_tier_1_tar "$release" "$arch")
 
+# dpkg arch -> OCI config arch (they differ for ppc64el/armhf/armel/riscv64)
+case "$arch" in
+  ppc64el) oci_arch=ppc64le ;;
+  armhf)   oci_arch=arm ;;
+  armel)   oci_arch=arm ;;
+  riscv64) oci_arch=riscv64 ;;
+  *)       oci_arch="$arch" ;;
+esac
+
 # --- build the OCI layout under $oci, then tar it (ctr import reads a .tar) ---
 oci="$tempDir/oci"
 layer="$oci/blobs/sha256"
@@ -38,7 +47,7 @@ mv "$layer/rootfs.tar.gz" "$layer/${layer_dig#sha256:}"
 # Minimal config; rootfs.diff_ids must list the uncompressed digest.
 cfg="$(mktemp)"
 cat > "$cfg" <<EOF
-{"architecture":"amd64","os":"linux","config":{"Cmd":["/bin/sh"]},"rootfs":{"type":"layers","diff_ids":["$diff_id"]}}
+{"architecture":"$oci_arch","os":"linux","config":{"Cmd":["/bin/sh"]},"rootfs":{"type":"layers","diff_ids":["$diff_id"]}}
 EOF
 cfg_dig="sha256:$(sha256sum "$cfg" | cut -d' ' -f1)"
 cfg_size=$(stat -c %s "$cfg")
