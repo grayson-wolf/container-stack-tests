@@ -86,9 +86,10 @@ lxc exec "$cname" --env DEBIAN_FRONTEND=noninteractive -- apt-get install -y \
 # Guest testbed setup
 #####################
 
-# Make the test tree available inside the guest
+# Make the test tree available inside the guest.
+test_tree="$(cd "$(dirname "$0")" && pwd)"
 lxc exec "$cname" -- mkdir -p /tmp/autopkgtest/debian/tests
-tar -cC debian/tests . | lxc exec "$cname" -- tar -xC /tmp/autopkgtest/debian/tests
+tar -cC "$test_tree" . | lxc exec "$cname" -- tar -xC /tmp/autopkgtest/debian/tests
 
 # Proxy drop-in for the *guest's* docker daemon
 lxc exec "$cname" \
