@@ -48,6 +48,7 @@ Features: test-name=build-in-rootless-app
 # Smoke - docker.io-app
 #########################################################
 
+# Owner: docker.io-app
 Test-Command: smoke/docker
 Depends: docker.io, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
@@ -57,11 +58,13 @@ Features: test-name=smoke-docker
 # Smoke - runc
 #########################################################
 
+# Owner: runc-app
 Test-Command: smoke/runc
 Depends: runc, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-runc-app
 
+# Owner: runc-stable
 Test-Command: smoke/runc
 Depends: runc-stable, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
@@ -71,11 +74,13 @@ Features: test-name=smoke-runc-stable
 # Smoke - containerd
 #########################################################
 
+# Owner: containerd-app
 Test-Command: smoke/containerd
 Depends: containerd, ca-certificates, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
 Features: test-name=smoke-containerd-app
 
+# Owner: containerd-stable
 Test-Command: smoke/containerd
 Depends: containerd-stable, ca-certificates, wget
 Restrictions: allow-stderr, isolation-machine, needs-root
@@ -85,6 +90,7 @@ Features: test-name=smoke-containerd-stable
 # Smoke - docker-buildx
 #########################################################
 
+# Owner: docker-buildx
 Test-Command: smoke/docker-buildx
 Depends: docker-buildx, docker.io, wget
 Restrictions: isolation-machine needs-root allow-stderr
@@ -94,8 +100,8 @@ Features: test-name=smoke-docker-buildx
 # Smoke - docker-compose-v2
 #########################################################
 
+# Owner: docker-compose-v2
 Test-Command: smoke/docker-compose-v2
 Depends: docker-compose-v2, docker.io, curl, wget
 Restrictions: isolation-machine needs-root allow-stderr
 Features: test-name=smoke-docker-compose-v2
-

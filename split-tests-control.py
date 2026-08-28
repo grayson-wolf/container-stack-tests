@@ -177,14 +177,30 @@ def main():
 
     stanzas = parse_control(master_path.read_text())
 
-    selected = [s for s in stanzas
-                if binary in split_depends(s['fields'].get('Depends', ''))
-                and binary in STACK_BINARIES]
+    def owner_of(stanza):
+        """Source package named by an '# Owner: <source>' comment, else None."""
+        m = re.search(r'^\s*#\s*Owner:\s*(\S+)\s*$', stanza['comment'], re.MULTILINE)
+        return m.group(1) if m else None
+
+    # stanzas marked with "Owner: <x>" only go to <x> (smoke tests)
+    # unmarked stanzas go to every container stack package present in their depends
+    selected = []
+    for s in stanzas:
+        owner = owner_of(s)
+        if owner is not None:
+            if owner == source:
+                selected.append(s)
+        elif binary in split_depends(s['fields'].get('Depends', '')) and binary in STACK_BINARIES:
+            selected.append(s)
     if not selected:
-        print(f'error: no stanzas in {master_path} depend on {binary}', file=sys.stderr)
+        print(f'error: no stanzas in {master_path} selected for {source} '
+              f'(binary {binary})', file=sys.stderr)
         return 1
 
     body = '\n\n'.join(s['raw'].rstrip() for s in selected) + '\n'
+
+    # Drop the owner flag from the generated control
+    body = re.sub(r'^\s*#\s*owner:.*\n', '', body, flags=re.MULTILINE)
 
     # Update the test-command in the generated control to target the correct script
     # Tolerates a legacy debian/tests/ prefix in the master too.
