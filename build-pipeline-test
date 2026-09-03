@@ -111,7 +111,7 @@ EOF
   fi
 
   # Choose arches to build on
-  if [ $arch != "amd64" ]; then
+  if [ "$arch" != "amd64" ]; then
     local platform="linux/amd64,linux/${arch}"
   else
     local platform="linux/amd64,linux/arm64"
@@ -129,12 +129,21 @@ EOF
   # Import the multiarch build into containerd and make sure it can see it.
   # Skipped on rootless since ctr talks to the system containerd socket
   if [ "$rootless" = false ]; then
-    if ! ctr images import "$ctx/out-oci.tar" >/dev/null 2>&1; then
+    if ! ctr images import "$ctx/out-oci.tar" >"$ctx/import.log" 2>&1; then
       echo "ERROR - $release: ctr could not import the buildx OCI layout" >&2
+      echo "--- ctr import output ---" >&2
+      cat "$ctx/import.log" >&2
+      echo "--- end ctr import output ---" >&2
       return $RC_CTR
     fi
     if ! ctr images ls -q | grep -q "pipeline-built-multi"; then
+      # Import exited 0 but the image is not listed. Dump the evidence
       echo "ERROR - $release: image not visible to containerd after import" >&2
+      echo "--- ctr import output ---" >&2
+      cat "$ctx/import.log" >&2
+      echo "--- ctr images ls ---" >&2
+      ctr images ls >&2
+      echo "--- end log output ---" >&2
       return $RC_CTR
     fi
   fi
@@ -186,9 +195,20 @@ EOF
     echo "ERROR - $release: failed to restart docker" >&2
     return $RC_RESTART
   fi
-  sleep 5
-  if ! docker compose -p "$project" ps --status running --format '{{.Service}}' \
-        | grep -qx web; then
+
+  # Poll for web to come back after restart
+  local wait_i wait_rc
+  wait_rc=1
+  for wait_i in $(seq 1 30); do
+    if docker compose -p "$project" ps --status running --format '{{.Service}}' \
+          | grep -qx web; then
+      wait_rc=0
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$wait_rc" -ne 0 ]; then
     echo "ERROR - $release: web did not survive docker restart" >&2
     return $RC_RESTART
   fi
