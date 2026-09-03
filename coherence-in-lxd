@@ -5,7 +5,9 @@
 # Exits 2 on unknown variant (this should never happen)
 # Exits 3 if the journal check finds err-severity (or worse) messages logged
 #   by the *guest's* container stack.
+# Exits 77 (skip) if the guest image cannot be fetched/launched
 . "$(dirname "$0")/lib/common.sh"
+. "$(dirname "$0")/lib/image_fetching.sh"
 . "$(dirname "$0")/lib/lxd.sh"
 set_strict
 set_x
@@ -50,8 +52,21 @@ defer "lxc storage delete '$poolname' >/dev/null 2>&1 || true"
 lxc storage volume create "$poolname" "$volname"
 defer "lxc storage volume delete '$poolname' '$volname' >/dev/null 2>&1 || true"
 
-if ! lxd_launch_nested "$cname" "ubuntu-daily:${suite}/${arch}"; then
+# fetch the LXD guest image, bail out if we can't
+# lxd_fetch_guest_image tries very hard to make the lxd daemon NOT do this fetching
+# as it's prone to dying while trying
+guest_image="$(lxd_fetch_guest_image "$suite" "$arch")" || {
+	echo "coherence-in-lxd: could not obtain a guest image for $suite/$arch; skipping" >&2
+	exit 77
+}
+
+if ! lxd_launch_nested "$cname" "$guest_image"; then
 	echo "coherence-in-lxd: failed to launch guest image (external); skipping" >&2
+	# launch failed, something is probably wrong (stalled image download?)
+	# dump logs and bail out
+	lxc image list >&2 || true
+	lxc list >&2 || true
+	journalctl -u snap.lxd.daemon --no-pager -n 50 >&2 || true
 	exit 77
 fi
 defer "lxc delete --force '$cname' >/dev/null 2>&1 || true"
@@ -87,6 +102,7 @@ lxc exec "$cname" --env DEBIAN_FRONTEND=noninteractive -- apt-get install -y \
 #####################
 
 # Make the test tree available inside the guest.
+# This includes the image cache.
 test_tree="$(cd "$(dirname "$0")" && pwd)"
 lxc exec "$cname" -- mkdir -p /tmp/autopkgtest/debian/tests
 tar -cC "$test_tree" . | lxc exec "$cname" -- tar -xC /tmp/autopkgtest/debian/tests
