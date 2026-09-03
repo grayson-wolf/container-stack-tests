@@ -29,12 +29,39 @@ tier_2_images=(
   "docker.io/library/alpine:latest"               # non-Ubuntu userland (musl)
 )
 
+# Cache directory for images
+# we use this since some tests (most notably coherence_in_lxd) have problems trying
+# to fetch the images from within a nested VM
+image_cache_dir() {
+  printf '%s\n' "${CST_IMAGE_CACHE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.image-cache}"
+}
+
 fetch_tier_1_tar() {
   local release="$1"
   local arch="$2"
 
   local image_url="https://cdimage.ubuntu.com/ubuntu-base/$release/daily/current/$release-base-$arch.tar.gz"
-  wget "$image_url" -O image.tar.gz
+  local cache_dir
+  cache_dir="$(image_cache_dir)"
+  local cached="$cache_dir/tier1-$release-base-$arch.tar.gz"
+
+  # try to grab the image from cache
+  if [ -s "$cached" ]; then
+    echo "fetch_tier_1_tar: $release $arch served from cache ($cached)"
+    cp "$cached" image.tar.gz
+    return 0
+  fi
+
+  # cache miss, actually get it
+  mkdir -p "$cache_dir"
+  if ! wget --continue --tries=5 --timeout=60 --retry-connrefused \
+        "$image_url" -O "$cached.part"; then
+    echo "fetch_tier_1_tar: fetch of $image_url failed" >&2
+    rm -f "$cached.part"
+    return 1
+  fi
+  mv "$cached.part" "$cached"
+  cp "$cached" image.tar.gz
 }
 
 # smoke_base_image — fetch + docker-import the second Tier 1 image (the current
