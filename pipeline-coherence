@@ -62,7 +62,7 @@ test_image() {
     return $RC_FETCH
   fi
 
-  # ======== Runtime Coherence Check ========
+  echo "======== $release Runtime Coherence Check ========"
 
   # Run this image in the archive runtime explicitly with our registered runtime
   local cid_archive
@@ -93,7 +93,7 @@ test_image() {
     return $RC_RUNTIME
   fi
 
-  # ======== AppArmor Coherence Check ========
+  echo "======== $release AppArmor Coherence Check ========"
 
   # unconfined apparmor
   local cid_aa_unconfined
@@ -130,7 +130,7 @@ test_image() {
     return $RC_APPARMOR
   fi
 
-  # ======== Seccomp Coherence Check ========
+  echo "======== $release Seccomp Coherence Check ========"
 
   # The default seccomp profile must be applied (2 = SECCOMP_MODE_FILTER).
   local seccomp_mode
@@ -142,7 +142,7 @@ test_image() {
     return $RC_SECCOMP
   fi
 
-  # ======== cgroup Coherence Check ========
+  echo "======== $release cgroup Coherence Check ========"
 
   local cgroup_ver
   cgroup_ver=$(docker info -f '{{.CgroupDriver}} {{.CgroupVersion}}' 2>/dev/null || true)
@@ -178,7 +178,7 @@ test_image() {
     return $RC_CGROUP_MEM
   fi
 
-  # ======== Volume/Mount Coherence Check ========
+  echo "======== $release Volume/Mount Coherence Check ========"
 
   # A bind mount must
   # - be writable from within the container
