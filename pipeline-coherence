@@ -18,7 +18,8 @@ readonly RC_CGROUP_MEM=4
 readonly RC_RUN=5
 readonly RC_FETCH=6
 readonly RC_SECCOMP=7
-readonly RC_MAX=$RC_SECCOMP
+readonly RC_VOLUME=8
+readonly RC_MAX=$RC_VOLUME
 
 result_strings=(
   "OK"                    # 0
@@ -29,7 +30,8 @@ result_strings=(
   "COULDN'T RUN"          # 5
   "FETCH FAILED"          # 6
   "BAD SECCOMP"           # 7
-  "UNKNOWN ERROR"         # 8 (out-of-range overflow; > RC_MAX maps here)
+  "BAD VOLUME"            # 8
+  "UNKNOWN ERROR"         # 9 (out-of-range overflow; > RC_MAX maps here)
 )
 
 # Run a given Tier 1 Image (an actual Ubuntu base image) through the coherence pipeline
@@ -42,7 +44,8 @@ result_strings=(
 # 5 - The container failed to run at all
 # 6 - The image fetch failed outright
 # 7 - The default seccomp profile was not applied (mode != 2)
-# 8 - Something Weird Happened (somehow, this returned >= 8)
+# 8 - A bind-mounted volume was not writable/visible across the boundary
+# 9 - Something Weird Happened (somehow, this returned >= 9)
 test_image() {
   local release="$1"
   local arch="${AUTOPKGTEST_TEST_ARCH:-amd64}"
@@ -174,6 +177,28 @@ test_image() {
     echo "ERROR - $release cgroup failure - should've been 67108864 (64M), but it is $memory_max"
     return $RC_CGROUP_MEM
   fi
+
+  # ======== Volume/Mount Coherence Check ========
+
+  # A bind mount must
+  # - be writable from within the container
+  # - have written changes from the container visible to the host
+  local vol_dir="$tempDir/vol-$release"
+  local marker="vol-ok-$$"
+  mkdir -p "$vol_dir"
+
+  local vol_out
+  vol_out=$(docker run --rm \
+    -v "$vol_dir:/data:rw" \
+    "ubuntu-base:$release" \
+    /bin/sh -c "echo '$marker' > /data/marker && cat /data/marker" 2>/dev/null || true)
+
+  if [ "$vol_out" != "$marker" ] || [ "$(cat "$vol_dir/marker" 2>/dev/null || true)" != "$marker" ]; then
+    echo "ERROR - $release bind mount broken - container saw '$vol_out', host sees '$(cat "$vol_dir/marker" 2>/dev/null || echo NOTHING)'"
+    rm -rf "$vol_dir"
+    return $RC_VOLUME
+  fi
+  rm -rf "$vol_dir"
 
   return $RC_OK
 }
